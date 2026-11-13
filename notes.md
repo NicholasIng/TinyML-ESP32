@@ -23,14 +23,39 @@
 - **Data layout** includes the noise level: `data/<snr>/fan/id_XX/...`, because the three
   MIMII zips use identical file names.
 
-## Data check (fill in after running src/check_data.py)
+## Data check (src/check_data.py, run 2026-11-14)
+All three noise levels have identical counts (same recordings, different noise mix).
+Every sampled file: 16000 Hz, 8 channels, 10.0 s.
+
 | snr | id | normal | abnormal |
 |---|---|---|---|
-| 6dB | id_00 | | |
-| 6dB | id_02 | | |
-| 6dB | id_04 | | |
-| 6dB | id_06 | | |
+| 6dB, 0dB, -6dB | id_00 | 1011 | 407 |
+| 6dB, 0dB, -6dB | id_02 | 1016 | 359 |
+| 6dB, 0dB, -6dB | id_04 | 1033 | 348 |
+| 6dB, 0dB, -6dB | id_06 | 1015 | 361 |
+| **total per snr** | | **4075** | **1475** |
 
-## Observations
-- (week 1) spectrogram plots: what differs between normal and abnormal? between id_00 and id_02?
-  Does -6 dB noise hide the difference?
+Unzipped size of all three levels: ~40 GB.
+
+## Observations (week 1, plots in results/)
+Mean spectrum = median over 50 clips of each clip's mean dB per mel band.
+
+- **id_00 normal vs abnormal (6 dB)**: abnormal has a strong extra peak in the lowest mel
+  bands 0-1 (about +9 dB), and slightly less energy around bands 35-45. The clear tone at
+  band ~20 is in both. So the fault cue is mostly low-frequency and stationary over the 10 s.
+- **id_00 vs id_02, both normal (6 dB)**: id_02 is 5-10 dB louder from band ~12 upward and
+  has a different set of tonal lines. The gap between two *normal* machines is bigger than
+  the gap between normal and abnormal of one machine. This is the domain-shift problem: a
+  threshold/model fitted on one machine will not transfer, which is what calibration fixes.
+- **id_02 abnormal is quieter than id_02 normal** (closer to id_00 normal). A fault is not
+  always "more energy"; keeping a fixed dB reference (no per-clip max) keeps this cue.
+- **-6 dB**: background noise lifts and flattens everything; the four curves almost overlap.
+  The id_00 low-band peak survives, but the id_02 normal/abnormal gap shrinks to 2-3 dB and
+  the id_00 vs id_02 difference mostly disappears. Expect much lower AUC at -6 dB.
+- Note: the single-clip spectrograms (`*_normal_vs_abnormal.png`) show one file only; trust
+  the mean-spectrum plots for group differences.
+
+## Environment notes
+- Machine used 2026-11-14 had only Python 3.13 (not 3.11); all week-1 requirements install
+  and run fine on 3.13. Check TensorFlow's supported Python versions before week 2.
+- `--snr -6dB` fails (argparse reads `-6dB` as a flag); use `--snr=-6dB`.

@@ -52,7 +52,7 @@ python src/check_data.py
 ## Week 1 plots
 ```
 python src/explore.py --snr 6dB
-python src/explore.py --snr -6dB
+python src/explore.py --snr=-6dB   # "=" needed: argparse reads a bare -6dB as a flag
 ```
 Writes PNGs into `results/`.
 

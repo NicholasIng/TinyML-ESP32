@@ -8,7 +8,7 @@ Makes, for one noise level:
 
 Usage:
     python src/explore.py               # 6dB
-    python src/explore.py --snr -6dB
+    python src/explore.py --snr=-6dB   # "=" needed: argparse reads a bare -6dB as a flag
 """
 
 import argparse
