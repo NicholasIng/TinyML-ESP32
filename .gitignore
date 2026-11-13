@@ -1,0 +1,30 @@
+# Data and environments: never commit
+data/
+venv/
+.venv/
+*.zip
+
+# Model files: never commit
+*.h5
+*.keras
+*.tflite
+*.pb
+saved_model/
+checkpoints/
+*.npy
+*.npz
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Editors / OS
+.vscode/*
+!.vscode/settings.json
+.DS_Store
+Thumbs.db
+
+# PlatformIO / ESP-IDF builds
+firmware/**/.pio/
+firmware/**/build/
