@@ -56,6 +56,14 @@ python src/explore.py --snr=-6dB   # "=" needed: argparse reads a bare -6dB as a
 ```
 Writes PNGs into `results/`.
 
+## Week 2 baseline
+```
+python src/cache_features.py --snr 6dB    # once per noise level, ~1 min, ~400 MB in data/cache
+python src/train.py --name base_6dB       # ~3 min on CPU, saves models/base_6dB.keras
+python src/evaluate.py --model base_6dB   # AUC / pAUC tables, writes results/eval_base_6dB.csv
+```
+Results and discussion are in `notes.md`.
+
 ## Rules
 - Never commit `data/`, `venv/`, or model files (.gitignore covers them).
 - Audio settings live only in `src/audio_config.py`; change them only with a note in notes.md.

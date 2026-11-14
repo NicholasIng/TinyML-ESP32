@@ -1,4 +1,4 @@
-# Week 1 (data + plots). TensorFlow gets added in week 2.
+# Week 1 (data + plots)
 numpy==2.4.6
 scipy==1.17.1
 librosa==0.11.0
@@ -7,3 +7,5 @@ matplotlib==3.11.2
 scikit-learn==1.9.1
 pandas==3.1.1
 tqdm==4.70.1
+# Week 2 (CNN). Verified on Python 3.13
+tensorflow==2.21.0
