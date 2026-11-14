@@ -116,12 +116,70 @@ Full per-ID numbers: `results/eval_base_6dB.csv` (model name `base_6dB`).
 - Larger / multi-scale context, or a margin loss (ArcFace-style) instead of plain softmax.
 - Repeat with 3-5 seeds before trusting differences of ±0.02.
 
-### In progress (2026-11-15)
-`train.py` now has options to make the training task harder (`--snrs`, `--classes id_snr`,
-`--mixup`, `--head cos`) and saves only the embedding part of the network. Five variants are
-being trained on 6 dB + 0 dB; −6 dB is kept out of CNN training so it stays an unseen noise
-level for week 3. Results will be added here.
-
 Note: the `base_6dB` numbers above come from the first version of `train.py` (30 epochs, early
 stopping). Re-running `train.py --name base_6dB` now uses 12 epochs with cosine learning-rate
 decay, so numbers will differ slightly.
+
+## Week 2b: a better embedding (2026-11-15)
+`train.py` got options to make the training task harder and now saves only the embedding
+part of the network (62,832 parameters; the classification head is thrown away).
+−6 dB is never used to train the CNN, so it stays an unseen noise level for week 3.
+
+| run | `train.py` options |
+|---|---|
+| a | `--snrs 6dB 0dB` (4 classes = machine ID) |
+| b | `--snrs 6dB 0dB --classes id_snr` (8 classes = machine ID × noise level) |
+| c | b + `--mixup 0.5` |
+| d | c + `--head cos` (cosine-margin head) |
+| e | `--snrs 6dB --mixup 0.5 --head cos` (6 dB only) |
+
+### Mean ROC-AUC over the four IDs, embedding + diagonal Gaussian (seed 0)
+Columns are "Gaussian fitted on > tested on".
+
+| model | 6>6 dB | 0>0 dB | −6>−6 dB | 6>−6 dB (no adaptation) | id_00 at 6 dB |
+|---|---|---|---|---|---|
+| no CNN, mel64 / shrink | 0.950 | 0.850 | 0.691 | 0.700 | 0.841 |
+| base_6dB | 0.935 | 0.802 | 0.601 | 0.572 | 0.792 |
+| a | 0.929 | 0.825 | 0.724 | 0.666 | 0.832 |
+| b | 0.965 | 0.912 | 0.688 | 0.531 | 0.867 |
+| **c** | **0.993** | **0.912** | 0.701 | 0.552 | **0.987** |
+| d | 0.982 | 0.895 | 0.702 | 0.539 | 0.948 |
+| e | 0.947 | 0.817 | 0.625 | 0.521 | 0.845 |
+
+Mean pAUC(0.1) at 6>6 dB: base 0.866, a 0.851, b 0.952, c 0.972, d 0.934, e 0.863.
+Per-ID numbers and the shrinkage variant: `results/eval_<model>.csv`.
+
+### What this says
+- **The CNN now beats the no-CNN baseline** at 6 dB (0.993 vs 0.950) and 0 dB (0.912 vs 0.850).
+- **A harder task is what helped.** Making the network also tell the noise level apart
+  (8 classes) and adding mixup lifted the hard machine id_00 from 0.79 to 0.99.
+  The cosine-margin head gave nothing on top of mixup: keep plain softmax.
+- **For the embedding, diagonal covariance is as good as or better than shrinkage** in the
+  matched conditions (c: 0.993 vs 0.970). Good news for the ESP32: 32 means + 32 variances.
+- **Trade-off:** b/c/d are best when the Gaussian is fitted on the matching noise level but
+  near chance with no adaptation (6>−6 dB ≈ 0.55). Run a (noise level not a class) is more
+  robust unadapted (0.666) but weaker when matched. We keep **c**: it is the "accurate when
+  calibrated, breaks under shift" case that the week-4 calibration has to fix.
+- **−6 dB stays hard for everything** (~0.70 even when refitted on all −6 dB training data).
+  That is the ceiling for calibration at −6 dB with these models.
+- Caveat: the best run was picked by test-set AUC, so 0.993 is a little optimistic.
+
+### Run c with three seeds (embedding + diagonal Gaussian, mean over the four IDs)
+The alarm threshold is the 95th percentile of the clip scores of the normal clips the
+Gaussian was fitted on (target: 5% false alarms). Values are mean ± std over seeds 0, 1, 2.
+
+| fitted on > tested on | ROC-AUC | false-alarm rate | detection rate |
+|---|---|---|---|
+| 6 > 6 dB | 0.994 ± 0.001 | 0.043 ± 0.002 | 0.961 ± 0.010 |
+| 0 > 0 dB | 0.906 ± 0.006 | 0.071 ± 0.003 | 0.647 ± 0.017 |
+| −6 > −6 dB | 0.703 ± 0.002 | 0.063 ± 0.003 | 0.231 ± 0.017 |
+| 6 > 0 dB (no adaptation) | 0.705 ± 0.039 | 1.000 | 1.000 |
+| 6 > −6 dB (no adaptation) | 0.539 ± 0.013 | 1.000 | 1.000 |
+
+- The improvement is not seed luck: id_00 at 6 dB is 0.986-0.987 in all three runs.
+- **This is already the week-3 domain-shift result for noise:** a threshold set at 6 dB
+  alarms on *every* clip at 0 dB and −6 dB. Refitting on the new noise level brings false
+  alarms back to 6-7%. Week 4 has to get close to the refit rows using only 10-30 s of audio.
+- Detection still falls with noise after a full refit (96% → 65% → 23%).
+- The chosen model is saved as `models/fan_v1.keras` (= run c, seed 0):
+  `python src/train.py --name fan_v1 --snrs 6dB 0dB --classes id_snr --mixup 0.5`

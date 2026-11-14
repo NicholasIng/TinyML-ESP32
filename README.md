@@ -64,6 +64,14 @@ python src/evaluate.py --model base_6dB   # AUC / pAUC tables, writes results/ev
 ```
 Results and discussion are in `notes.md`.
 
+Current best model (`fan_v1`, needs the 6dB and 0dB caches, ~10 min on CPU):
+```
+python src/cache_features.py --snr 0dB
+python src/train.py --name fan_v1 --snrs 6dB 0dB --classes id_snr --mixup 0.5
+python src/evaluate.py --model fan_v1
+python src/evaluate.py --model fan_v1 --conditions="6dB>6dB,6dB>-6dB"   # fit>test pairs
+```
+
 ## Rules
 - Never commit `data/`, `venv/`, or model files (.gitignore covers them).
 - Audio settings live only in `src/audio_config.py`; change them only with a note in notes.md.

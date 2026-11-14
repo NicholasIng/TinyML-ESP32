@@ -13,7 +13,7 @@ it is tested on. "6dB>-6dB" is a noise shift with no adaptation.
 
 Usage:
     python src/evaluate.py --model base_6dB
-    python src/evaluate.py --model base_6dB --conditions "6dB>6dB" "6dB>0dB"
+    python src/evaluate.py --model base_6dB --conditions="6dB>6dB,6dB>0dB,6dB>-6dB"
 """
 
 import argparse
@@ -30,8 +30,9 @@ from tensorflow import keras
 import audio_config as C
 from dataset import IDS, ROOT, load_split
 
-DEFAULT_CONDITIONS = ["6dB>6dB", "0dB>0dB", "-6dB>-6dB", "6dB>-6dB"]
+DEFAULT_CONDITIONS = ["6dB>6dB", "0dB>0dB", "-6dB>-6dB", "6dB>0dB", "6dB>-6dB"]
 METHODS = ["mel64/diag", "mel64/shrink", "emb/diag", "emb/shrink"]
+TARGET_FPR = 0.05   # false-alarm rate the fixed threshold aims at in the fit condition
 
 
 class Gaussian:
@@ -78,21 +79,30 @@ def evaluate(model_name: str, conditions=DEFAULT_CONDITIONS) -> pd.DataFrame:
                 feat, kind = method.split("/")
                 g = Gaussian(fit[feat], kind)
                 clip = lambda f: g.score(f[feat]).reshape(-1, 10).mean(axis=1)
-                rows.append((cond, mid, method, *aucs(clip(fn), clip(fa))))
-    return pd.DataFrame(rows, columns=["condition", "id", "method", "auc", "pauc"])
+                sn, sa = clip(fn), clip(fa)
+                # Alarm threshold as a device would set it: from the normal clips the
+                # Gaussian was fitted on, aiming at TARGET_FPR false alarms.
+                thr = np.quantile(clip(fit), 1 - TARGET_FPR)
+                rows.append((cond, mid, method, *aucs(sn, sa), (sn > thr).mean(), (sa > thr).mean()))
+    return pd.DataFrame(rows, columns=["condition", "id", "method", "auc", "pauc", "fpr", "tpr"])
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True, help="name used in train.py --name")
-    ap.add_argument("--conditions", nargs="+", default=DEFAULT_CONDITIONS)
+    ap.add_argument("--conditions", default=",".join(DEFAULT_CONDITIONS),
+                    help="comma-separated fit>test pairs; write it with = (see Usage)")
     args = ap.parse_args()
+    args.conditions = args.conditions.split(",")
 
     df = evaluate(args.model, args.conditions)
-    for metric in ("auc", "pauc"):
+    titles = {"auc": "ROC-AUC", "pauc": "pAUC (FPR <= 0.1)",
+              "fpr": f"false-alarm rate at the fixed threshold (target {TARGET_FPR})",
+              "tpr": "detection rate at the fixed threshold"}
+    for metric in ("auc", "pauc", "fpr", "tpr"):
         t = df.pivot_table(index="method", columns="condition", values=metric)
         t = t.loc[METHODS, args.conditions]
-        print(f"\nmean {metric.upper()} over the four machine IDs, model = {args.model}")
+        print(f"\nmean {titles[metric]} over the four machine IDs, model = {args.model}")
         print(t.round(3).to_string())
     first = args.conditions[0]
     t = df[df.condition == first].pivot(index="method", columns="id", values="auc").loc[METHODS]
