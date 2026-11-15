@@ -80,6 +80,13 @@ python src/shift_machine.py     # unseen-machine table, writes results/shift_mac
 python src/plot_shift.py        # results/week3_shift.png (needs eval_fan_v1.csv too)
 ```
 
+## Week 4 calibration
+```
+python src/calib_experiment.py   # needs fan_v1 and the four loo_ models; ~3 min
+```
+Writes `results/calibration.csv` and `results/week4_calibration.png`. The methods themselves
+are in `src/calibration.py`, written to be ported to C++.
+
 ## Rules
 - Never commit `data/`, `venv/`, or model files (.gitignore covers them).
 - Audio settings live only in `src/audio_config.py`; change them only with a note in notes.md.

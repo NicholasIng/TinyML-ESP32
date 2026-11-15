@@ -226,3 +226,75 @@ id_04 0.987 → 0.921, id_06 1.000 → 1.000 (seen → unseen + refit).
   calibration handles the room/noise, (3) run week 4 calibration on both features and report both.
 - Memory note: do not start four trainings at once on this PC (24 GB): three crashed with
   out-of-memory while loading. Two at a time is fine.
+
+## Week 4: calibration with 5-30 s of normal audio (2026-11-15)
+Code: `src/calibration.py` (the methods, plain arrays, portable to C++) and
+`src/calib_experiment.py` (the experiment). Results: `results/calibration.csv`,
+figure `results/week4_calibration.png`.
+
+**Setup.** Model per machine = `mu[32]`, `var[32]`, `thr`. Window score = mean over the 32
+dimensions of (x − mu)² / var; a clip alarms if the mean score of its ten windows > thr.
+Calibration audio is drawn at random from the new condition's *training* clips (whole 10 s
+clips, so 20 s = 2 clips, 30 s = 3 clips), 30 random draws, mean over the four fans.
+
+| scenario | factory data | new condition | CNN |
+|---|---|---|---|
+| noise_0dB | same fan, 6 dB | 0 dB | fan_v1 |
+| noise_-6dB | same fan, 6 dB | −6 dB (never seen by the CNN) | fan_v1 |
+| machine | three other fans, 6 dB | unseen fan, 6 dB | leave-one-out |
+| machine+noise | three other fans, 6 dB | unseen fan, 0 dB | leave-one-out |
+
+| method | what changes on the device |
+|---|---|
+| none | nothing |
+| thr_retune | only thr (= mean + k·std of the calibration window scores; k from the factory) |
+| centroid | mu = mean of the calibration windows; factory var and thr |
+| centroid_cal | centroid, but thr from a small factory table indexed by calibration length |
+| centroid_var_cal | centroid_cal + var = (n0·var_factory + n·var_measured)/(n0 + n), n0 = 30 |
+
+The threshold table comes from rehearsing the calibration on factory data only (calibrate on
+n seconds of a factory fan, score its other clips, take the 95% quantile). It corrects for
+the mean being slightly off when it is estimated from a few seconds. No target data is used.
+
+### Results, CNN embedding (balanced accuracy = (detection + 1 − false alarms)/2)
+| scenario | method | 5 s | 10 s | 20 s | 30 s | ROC-AUC at 30 s | false alarms at 30 s |
+|---|---|---|---|---|---|---|---|
+| noise_0dB | thr_retune | 0.664 | 0.682 | 0.696 | 0.703 | 0.662 | 0.055 |
+| noise_0dB | centroid_var_cal | 0.798 | 0.779 | 0.809 | 0.821 | 0.904 | 0.190 |
+| noise_-6dB | thr_retune | 0.543 | 0.545 | 0.556 | 0.563 | 0.552 | 0.129 |
+| noise_-6dB | centroid_var_cal | 0.559 | 0.565 | 0.604 | 0.626 | 0.682 | 0.404 |
+| machine | thr_retune | 0.592 | 0.607 | 0.633 | 0.642 | 0.538 | 0.098 |
+| machine | centroid_var_cal | 0.805 | 0.812 | 0.841 | 0.838 | 0.916 | 0.090 |
+| machine+noise | thr_retune | 0.595 | 0.613 | 0.633 | 0.646 | 0.558 | 0.095 |
+| machine+noise | centroid_var_cal | 0.658 | 0.662 | 0.703 | 0.730 | 0.817 | 0.289 |
+
+No adaptation: balanced accuracy 0.500 everywhere (alarms on every clip).
+Full refit on all target training data, ROC-AUC: 0.912 / 0.701 / 0.931 / 0.834.
+
+### What this says
+- **The rule is met: calibration beats threshold re-tune** in all four scenarios at every
+  length, on balanced accuracy and by a wide margin on ROC-AUC (e.g. machine: 0.92 vs 0.54).
+  Threshold re-tune cannot change the ranking of clips, so its AUC stays at the unadapted value.
+- **The centroid shift does most of the work, and 5 s is already enough for it.** ROC-AUC with
+  10 s is within 0.02-0.06 of a full refit on ~98 minutes of audio.
+- **The threshold is the weak point.** In the machine scenario false alarms are ~9% (target
+  5%). When the new room is noisier they are 19% (0 dB) and 40% (−6 dB) even with 30 s:
+  noisier audio varies more from clip to clip than the factory rehearsal assumed. Mixing in
+  measured variances helps (centroid_var_cal vs centroid_cal: 0.30 → 0.19 at 0 dB) but does
+  not close the gap. Threshold re-tune has fewer false alarms but misses over half the faults.
+- **5 s and 10 s are equal; 20 s and 30 s are better.** 5 and 10 s come from one clip, 20/30 s
+  from 2-3 different clips. Variety over time matters more than seconds: on the device,
+  spread the calibration recording out (e.g. 3 × 10 s some minutes apart).
+- **The CNN earns its place here.** With calibration the embedding beats the 64 mel means in
+  every scenario (30 s, balanced accuracy: 0.82 vs 0.69, 0.63 vs 0.56, 0.84 vs 0.72, 0.73 vs
+  0.64), including on an unseen fan, where the two were tied after a full refit (week 3).
+- n0 between 10 and 100 changes balanced accuracy by less than 0.02: not a sensitive setting.
+- Tried and dropped: re-tuning the threshold from leave-one-out scores of the calibration
+  windows. Windows from the same clip are too similar, so the threshold comes out too low.
+- Caveat: balanced accuracy compares methods at different operating points; the full refit
+  can score lower on it than a calibrated model because it sits at ~6% false alarms.
+
+### Open for week 5 / later
+- Lower the false alarms in noisier rooms: e.g. a safety factor on the table threshold that
+  grows with the measured/factory variance ratio, or a short second calibration pass.
+- Port `calibrate()` and `score()` to C++ (fixed arrays: 32 means, 32 variances, 4 thresholds).
