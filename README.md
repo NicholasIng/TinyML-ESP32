@@ -72,6 +72,14 @@ python src/evaluate.py --model fan_v1
 python src/evaluate.py --model fan_v1 --conditions="6dB>6dB,6dB>-6dB"   # fit>test pairs
 ```
 
+## Week 3 domain shift
+```
+python src/train.py --name loo_id_00 --holdout-id id_00 --snrs 6dB 0dB --classes id_snr --mixup 0.5
+# ...same for id_02, id_04, id_06 (one or two at a time: four at once runs out of memory)
+python src/shift_machine.py     # unseen-machine table, writes results/shift_machine.csv
+python src/plot_shift.py        # results/week3_shift.png (needs eval_fan_v1.csv too)
+```
+
 ## Rules
 - Never commit `data/`, `venv/`, or model files (.gitignore covers them).
 - Audio settings live only in `src/audio_config.py`; change them only with a note in notes.md.

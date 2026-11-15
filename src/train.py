@@ -9,6 +9,8 @@ Options that make the training task harder (a harder task gives a more useful em
   --classes id_snr    one class per (machine ID, noise level) instead of per machine ID
   --mixup 0.5         blend pairs of windows and their labels (Beta(0.5, 0.5))
   --head cos          cosine-margin head (CosFace) instead of plain softmax
+Week 3:
+  --holdout-id id_00  leave one machine out, to test the CNN on a machine it never heard
 
 Output (git-ignored): models/<name>.keras, models/<name>.json
 
@@ -74,10 +76,10 @@ def build(mean: float, std: float, n_classes: int, head: str):
     return embedder, keras.Model(inp, out)
 
 
-def stack(snrs, part, classes):
+def stack(snrs, part, classes, ids):
     xs, ys = [], []
     for s, snr in enumerate(snrs):
-        for k, mid in enumerate(IDS):
+        for k, mid in enumerate(ids):
             x = load_split(snr, mid)[part].reshape(-1, C.N_MELS, C.FRAMES_PER_WIN, 1)
             xs.append(x)
             ys.append(np.full(len(x), k * len(snrs) + s if classes == "id_snr" else k))
@@ -101,6 +103,8 @@ def main():
     ap.add_argument("--classes", default="id", choices=["id", "id_snr"])
     ap.add_argument("--mixup", type=float, default=0.0)
     ap.add_argument("--head", default="softmax", choices=["softmax", "cos"])
+    ap.add_argument("--holdout-id", default=None, choices=IDS,
+                    help="leave this machine out of CNN training (week 3: unseen machine)")
     ap.add_argument("--epochs", type=int, default=12)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--threads", type=int, default=0, help="CPU threads (0 = all)")
@@ -110,8 +114,9 @@ def main():
         tf.config.threading.set_inter_op_parallelism_threads(2)
     keras.utils.set_random_seed(args.seed)
 
-    xtr, ytr = stack(args.snrs, "train", args.classes)
-    xva, yva = stack(args.snrs, "val", args.classes)
+    ids = [m for m in IDS if m != args.holdout_id]
+    xtr, ytr = stack(args.snrs, "train", args.classes, ids)
+    xva, yva = stack(args.snrs, "val", args.classes, ids)
     n_classes = int(ytr.max()) + 1
     mean, std = float(xtr.mean()), float(xtr.std())
     print(f"train {xtr.shape}, val {xva.shape}, {n_classes} classes, mean {mean:.2f}, std {std:.2f}")

@@ -183,3 +183,46 @@ Gaussian was fitted on (target: 5% false alarms). Values are mean ± std over se
 - Detection still falls with noise after a full refit (96% → 65% → 23%).
 - The chosen model is saved as `models/fan_v1.keras` (= run c, seed 0):
   `python src/train.py --name fan_v1 --snrs 6dB 0dB --classes id_snr --mixup 0.5`
+
+## Week 3: domain shift (2026-11-15)
+Figure for the slides: `results/week3_shift.png` (`python src/plot_shift.py`).
+All numbers: CNN embedding + diagonal Gaussian unless stated, mean over the four fans.
+The alarm threshold always comes from the normal clips the Gaussian was fitted on (5% target).
+
+### Noise shift (model `fan_v1`, same machine, Gaussian fitted at 6 dB)
+See the three-seed table in week 2b. Tested at 0 dB: AUC 0.99 → 0.71, false alarms 4% → 100%.
+Tested at −6 dB: AUC 0.54, false alarms 100%. Refit on the new noise level: false alarms 6-7%.
+
+### Machine shift (`src/shift_machine.py`, results in `results/shift_machine.csv`)
+Four leave-one-out CNNs (`train.py --holdout-id`), each trained without one fan, same recipe
+as `fan_v1`. The held-out fan is then tested with the Gaussian + threshold taken from:
+its own normal clips (refit), the three other fans pooled, or one other fan (mean of three).
+
+| 6 dB | ROC-AUC | false-alarm rate | detection rate |
+|---|---|---|---|
+| fan seen in CNN training (`fan_v1`) | 0.993 | 0.043 | 0.951 |
+| unseen fan, Gaussian from one other fan | 0.578 | 1.000 | 1.000 |
+| unseen fan, Gaussian from three other fans | 0.507 | 0.754 | 0.790 |
+| unseen fan, refit on its own normal clips | 0.931 | 0.036 | 0.768 |
+
+Same at 0 dB: seen 0.912, one other fan 0.569 (95% false alarms), pooled 0.648 (27%),
+refit 0.834 (6% false alarms, 46% detection).
+
+ROC-AUC per held-out fan at 6 dB: id_00 0.987 → 0.814 after refit, id_02 1.000 → 0.989,
+id_04 0.987 → 0.921, id_06 1.000 → 1.000 (seen → unseen + refit).
+
+### What this says
+- **No adaptation = unusable.** Moving the detector to another fan, or to a noisier room,
+  makes it alarm on (almost) everything. A "factory default" pooled over three fans does not
+  help (75% false alarms at 6 dB). This is the problem statement for week 4.
+- **Refitting on the new machine fixes the false alarms** (4%) and most of the AUC (0.93).
+  That refit uses ~590 clips (98 minutes) of normal audio; week 4 must get close with 10-30 s.
+- **Open problem: on an unseen fan the CNN is no better than no CNN.** After refit the
+  embedding gets 0.931 (diag) / 0.946 (shrink); the 64 mel means get 0.931 / 0.950. The big
+  gain of week 2b (0.993) only holds for fans the CNN was trained on. id_00 is the fan that
+  loses most (0.987 → 0.814). With only three training fans the CNN learns those fans, not
+  "fans in general". Options: (1) add more machines to CNN training (other MIMII types, MIMII
+  DUE), (2) accept it and state that the CNN's value is for known machine models while
+  calibration handles the room/noise, (3) run week 4 calibration on both features and report both.
+- Memory note: do not start four trainings at once on this PC (24 GB): three crashed with
+  out-of-memory while loading. Two at a time is fine.

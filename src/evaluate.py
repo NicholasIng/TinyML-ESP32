@@ -56,35 +56,50 @@ def aucs(normal: np.ndarray, abnormal: np.ndarray) -> tuple[float, float]:
     return roc_auc_score(y, s), roc_auc_score(y, s, max_fpr=0.1)
 
 
-def evaluate(model_name: str, conditions=DEFAULT_CONDITIONS) -> pd.DataFrame:
-    """Long table: condition, id, method, auc, pauc."""
+def feature_bank(model_name: str):
+    """Returns feats(snr, mid, part) -> {"mel64": (n, 64), "emb": (n, 32)}, n = clips*10.
+    Per-window features of one group, computed once and then cached."""
     net = keras.models.load_model(ROOT / "models" / f"{model_name}.keras")
     cache = {}
 
     def feats(snr, mid, part):
-        """Per-window features of one group: {"mel64": (n, 64), "emb": (n, 32)}, n = clips*10."""
         if (snr, mid, part) not in cache:
             w = load_split(snr, mid)[part].reshape(-1, C.N_MELS, C.FRAMES_PER_WIN)
             cache[snr, mid, part] = {"mel64": w.mean(axis=2),
                                      "emb": net.predict(w[..., None], batch_size=256, verbose=0)}
         return cache[snr, mid, part]
+    return feats
 
+
+METRICS = ["auc", "pauc", "fpr", "tpr"]
+
+
+def score_methods(fit: dict, test_normal: dict, test_abnormal: dict) -> list[tuple]:
+    """One row (method, auc, pauc, fpr, tpr) per method. `fit` = normal windows the Gaussian
+    is fitted on; the alarm threshold is also set from them, as a device would: the
+    (1 - TARGET_FPR) quantile of their clip scores."""
+    rows = []
+    for method in METHODS:
+        feat, kind = method.split("/")
+        g = Gaussian(fit[feat], kind)
+        clip = lambda f: g.score(f[feat]).reshape(-1, 10).mean(axis=1)
+        sn, sa = clip(test_normal), clip(test_abnormal)
+        thr = np.quantile(clip(fit), 1 - TARGET_FPR)
+        rows.append((method, *aucs(sn, sa), (sn > thr).mean(), (sa > thr).mean()))
+    return rows
+
+
+def evaluate(model_name: str, conditions=DEFAULT_CONDITIONS) -> pd.DataFrame:
+    """Long table: condition, id, method, auc, pauc, fpr, tpr."""
+    feats = feature_bank(model_name)
     rows = []
     for cond in conditions:
         fit_snr, test_snr = cond.split(">")
         for mid in IDS:
-            fit = feats(fit_snr, mid, "train")
-            fn, fa = feats(test_snr, mid, "test_normal"), feats(test_snr, mid, "test_abnormal")
-            for method in METHODS:
-                feat, kind = method.split("/")
-                g = Gaussian(fit[feat], kind)
-                clip = lambda f: g.score(f[feat]).reshape(-1, 10).mean(axis=1)
-                sn, sa = clip(fn), clip(fa)
-                # Alarm threshold as a device would set it: from the normal clips the
-                # Gaussian was fitted on, aiming at TARGET_FPR false alarms.
-                thr = np.quantile(clip(fit), 1 - TARGET_FPR)
-                rows.append((cond, mid, method, *aucs(sn, sa), (sn > thr).mean(), (sa > thr).mean()))
-    return pd.DataFrame(rows, columns=["condition", "id", "method", "auc", "pauc", "fpr", "tpr"])
+            for r in score_methods(feats(fit_snr, mid, "train"), feats(test_snr, mid, "test_normal"),
+                                   feats(test_snr, mid, "test_abnormal")):
+                rows.append((cond, mid, *r))
+    return pd.DataFrame(rows, columns=["condition", "id", "method", *METRICS])
 
 
 def main():
