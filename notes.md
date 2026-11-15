@@ -294,7 +294,113 @@ Full refit on all target training data, ROC-AUC: 0.912 / 0.701 / 0.931 / 0.834.
 - Caveat: balanced accuracy compares methods at different operating points; the full refit
   can score lower on it than a calibrated model because it sits at ~6% false alarms.
 
+### Week 4b: why the false alarms happen, and the burn-in fix (2026-11-15)
+
+**Cause.** Split the variance of normal embeddings into "inside one 10 s clip" and "between
+clips" and compare the new condition with the factory data (ratio, mean over 32 dimensions
+and four fans):
+
+| scenario | inside a clip | between clips | false alarms, 30 s calibration | same, with the true mean | true mean + true variances |
+|---|---|---|---|---|---|
+| noise_0dB | 1.3× | 2.2× | 0.20 | 0.25 | 0.11 |
+| noise_-6dB | 2.4× | 7.4× | 0.40 | 0.65 | 0.12 |
+| machine | 0.8× | 1.5× | 0.09 | 0.08 | 0.06 |
+| machine+noise | 1.2× | 4.0× | 0.31 | 0.39 | 0.11 |
+
+- The mean is not the problem: with the exact mean of the new condition the false alarms stay.
+- The problem is clip-to-clip variation. Background noise changes from minute to minute, so
+  in a noisier room the embedding of normal sound wanders 2-7× more between clips, while
+  inside one clip it grows only 1.3-2.4×. 30 s is three clips: it shows the inside-clip part
+  but almost nothing of the between-clip part, so the variances and the threshold are too tight.
+- Even with exact variances the factory threshold gives ~11%: the clip-score distribution has
+  a longer tail in noise, so the threshold itself has to come from the new room.
+
+**Tried first, not kept:** estimate the between-clip variance from the 2-3 calibration clip
+means and add it to the variances. False alarms 19% → 15% (0 dB) and 40% → 23-29% (−6 dB),
+ROC-AUC unchanged. Three clips are too few to measure this.
+
+**Fix: burn-in threshold** (`burn_1min`, `burn_5min` in `src/calibration.py`). After the
+verified calibration the device listens for 1-5 more minutes without raising alarms, keeps
+only count, sum and sum of squares of its clip scores (three numbers), and sets
+`thr = mean + k·std`. k comes from a factory rehearsal table (about 4 for 1 min, 2.4 for
+5 min). Mean and variances still come only from the verified audio.
+
+False alarms / detection rate, CNN embedding, mean over four fans and 30 draws:
+
+| scenario | 30 s + table (before) | 30 s + 1 min burn-in | 30 s + 5 min burn-in | 10 s + 5 min burn-in | full refit |
+|---|---|---|---|---|---|
+| noise_0dB | 0.19 / 0.83 | 0.07 / 0.55 | 0.07 / 0.61 | 0.07 / 0.59 | 0.07 / 0.65 |
+| noise_-6dB | 0.40 / 0.66 | 0.09 / 0.23 | 0.07 / 0.19 | 0.06 / 0.17 | 0.07 / 0.21 |
+| machine | 0.09 / 0.77 | 0.05 / 0.72 | 0.05 / 0.74 | 0.05 / 0.74 | 0.04 / 0.77 |
+| machine+noise | 0.29 / 0.75 | 0.06 / 0.35 | 0.06 / 0.39 | 0.06 / 0.31 | 0.06 / 0.46 |
+
+- False alarms are now 5-7% in every scenario (5-9% with only 1 min), the same as a full
+  refit on ~98 minutes of audio, which itself sits at 4-7%.
+- The detection rate drops, and that is the honest number: the earlier high detection rates
+  were bought with false alarms. ROC-AUC is unchanged (0.90 / 0.68 / 0.92 / 0.82), so the
+  burn-in only moves the alarm line to where it should have been.
+- Balanced accuracy therefore goes down in the noisy scenarios (0 dB: 0.82 → 0.77) and up
+  slightly on the unseen fan (0.84 → 0.85). Calibration + burn-in still beats threshold
+  re-tune in the 0 dB, machine and machine+noise scenarios (0.77 vs 0.70, 0.85 vs 0.64,
+  0.67 vs 0.65); at −6 dB both are near chance (0.56 vs 0.56).
+- What limits detection in noise is now the embedding (AUC 0.68 at −6 dB), not calibration.
+- Assumption to state in the report: the machine stays healthy during the burn-in minutes.
+  A fault that starts in that window would raise the threshold.
+- Figure: `results/week4_false_alarms.png`.
+
+### Week 4c: false alarms towards 0% with a vote over 2 minutes (2026-11-16)
+
+0% false alarms alone is trivial (never raise an alarm), so the aim is: as few false alarms
+as possible **without losing detection**.
+
+**Idea.** A single 10 s clip above the threshold is weak evidence. Noise bursts come and go;
+a fault stays. So the device alarms only when at least **9 of the last 12 clips** (2 minutes)
+are above the threshold. Because nine agreeing clips are much stricter than one, the per-clip
+threshold can be set lower (20% of normal clips above it instead of 5%), which catches weaker
+faults. Still `thr = mean + k·std` of the burn-in clip scores, only with a smaller k from the
+same factory rehearsal. On the device: 12 flags in a ring buffer and a counter.
+
+**Check that the clip order means something.** Scores of neighbouring abnormal clips in file
+order are strongly correlated at 6 dB (r = 0.6-0.8): neighbours are the same kind of fault, so
+12 consecutive abnormal clips are a fair stand-in for a fault that persists. Scores of normal
+clips show no correlation between neighbours at any noise level (|r| < 0.1).
+
+**Results** (`burn_5min_vote`; CNN embedding, 30 s calibration + 5 min burn-in, mean over
+four fans and 30 draws; false alarms / detection, counted over every run of 12 consecutive
+test clips):
+
+| scenario | one clip, 5% threshold (week 4b) | 9-of-12 vote | fair threshold re-tune + same vote |
+|---|---|---|---|
+| noise_0dB | 6.6% / 60% | 0.00% / 75% | 1.04% / 49% |
+| noise_-6dB | 6.7% / 19% | 0.15% / 20% | 0.40% / 23% |
+| machine | 4.7% / 74% | 0.10% / 77% | 0.18% / 35% |
+| machine+noise | 5.9% / 39% | 0.03% / 59% | 0.02% / 40% |
+
+- False alarms drop from 5-7% to 0.00-0.15%, and detection goes **up** in three scenarios
+  (0 dB: 60 → 75%, machine+noise: 39 → 59%) and stays level in the other.
+- With 10 s of calibration instead of 30 s: 0.04-0.13% false alarms, detection 69 / 19 / 75 / 48%.
+- ROC-AUC of the voted decision: 0.98 / 0.82 / 0.97 / 0.93 (single clip: 0.90 / 0.68 / 0.92 / 0.82).
+- **Rule "calibration must beat threshold re-tune", fair version** (`retune_5min`,
+  `retune_5min_vote`: factory Gaussian, threshold from the same 5 min of burn-in, same vote).
+  Balanced accuracy, calibration vs re-tune: 0 dB 0.87 vs 0.74, machine 0.88 vs 0.67,
+  machine+noise 0.80 vs 0.70, −6 dB 0.60 vs 0.61. Calibration wins clearly in three
+  scenarios; at −6 dB it is a tie, both barely above chance.
+- How the rule was picked: tried M-of-N votes with per-clip thresholds at 50-95% on these same
+  test clips. Stricter (10/12, 12/12) and looser (6/12 at 5%) settings give the same picture;
+  9/12 at 20% is in the middle. Because it was chosen on the test data, treat the exact
+  numbers as slightly optimistic. Averaging the scores of N clips instead of voting was worse:
+  it kept 3-9% false alarms in noisy rooms (long tail of the score distribution).
+
+**Limits, to state in the report**
+- The price is time: an alarm needs at least 90 s of fault sound and decisions use 2 minutes.
+- MIMII normal clips are independent of each other. In a real room, loud periods last longer
+  than one clip, so false alarms will be higher than 0.1% there. The vote length (12) is the
+  knob to turn on the real device.
+- At −6 dB only ~20% of faults are caught. This is the embedding, not the alarm logic.
+
 ### Open for week 5 / later
-- Lower the false alarms in noisier rooms: e.g. a safety factor on the table threshold that
-  grows with the measured/factory variance ratio, or a short second calibration pass.
-- Port `calibrate()` and `score()` to C++ (fixed arrays: 32 means, 32 variances, 4 thresholds).
+- Better ranking in heavy noise (the limit at −6 dB): train the CNN with −6 dB too, or more
+  machines / MIMII DUE. Calibration and voting cannot fix this part.
+- Port to C++: `calibrate()`, `score()`, burn-in (3 running numbers) and the vote (12 flags).
+  Constants from the PC: 32 means, 32 variances, 4 table thresholds, k values.
+- Test the vote on real consecutive recordings from the INMP441.

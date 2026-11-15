@@ -84,8 +84,11 @@ python src/plot_shift.py        # results/week3_shift.png (needs eval_fan_v1.csv
 ```
 python src/calib_experiment.py   # needs fan_v1 and the four loo_ models; ~3 min
 ```
-Writes `results/calibration.csv` and `results/week4_calibration.png`. The methods themselves
-are in `src/calibration.py`, written to be ported to C++.
+Writes `results/calibration.csv`, `results/week4_calibration.png` (balanced accuracy) and
+`results/week4_false_alarms.png`. The methods are in `src/calibration.py`, written to be
+ported to C++: calibration from 5-30 s of verified normal audio, then a 1-5 min burn-in that
+sets the alarm threshold from the device's own clip scores. The alarm itself is a vote:
+at least 9 of the last 12 clips (2 minutes) above the threshold.
 
 ## Rules
 - Never commit `data/`, `venv/`, or model files (.gitignore covers them).
