@@ -14,6 +14,7 @@ it is tested on. "6dB>-6dB" is a noise shift with no adaptation.
 Usage:
     python src/evaluate.py --model base_6dB
     python src/evaluate.py --model base_6dB --conditions="6dB>6dB,6dB>0dB,6dB>-6dB"
+    python src/evaluate.py --model fan_v1_int8      # int8 TFLite model (convert_tflite.py)
 """
 
 import argparse
@@ -59,14 +60,20 @@ def aucs(normal: np.ndarray, abnormal: np.ndarray) -> tuple[float, float]:
 def feature_bank(model_name: str):
     """Returns feats(snr, mid, part) -> {"mel64": (n, 64), "emb": (n, 32)}, n = clips*10.
     Per-window features of one group, computed once and then cached."""
-    net = keras.models.load_model(ROOT / "models" / f"{model_name}.keras")
+    tfl = ROOT / "models" / f"{model_name}.tflite"
+    if tfl.exists():   # int8 model from convert_tflite.py, run as the ESP32 runs it
+        from tflite_runner import Int8Embedder
+        net = Int8Embedder(tfl)
+    else:
+        net = keras.models.load_model(ROOT / "models" / f"{model_name}.keras")
+    kw = {} if tfl.exists() else {"batch_size": 256, "verbose": 0}
     cache = {}
 
     def feats(snr, mid, part):
         if (snr, mid, part) not in cache:
             w = load_split(snr, mid)[part].reshape(-1, C.N_MELS, C.FRAMES_PER_WIN)
             cache[snr, mid, part] = {"mel64": w.mean(axis=2),
-                                     "emb": net.predict(w[..., None], batch_size=256, verbose=0)}
+                                     "emb": net.predict(w[..., None], **kw)}
         return cache[snr, mid, part]
     return feats
 

@@ -90,6 +90,32 @@ ported to C++: calibration from 5-30 s of verified normal audio, then a 1-5 min 
 sets the alarm threshold from the device's own clip scores. The alarm itself is a vote:
 at least 9 of the last 12 clips (2 minutes) above the threshold.
 
+## Week 5 int8 model
+```
+python src/convert_tflite.py --model fan_v1      # models/fan_v1_int8.tflite, ~72 kB
+python src/evaluate.py --model fan_v1_int8       # same tables with the int8 embedding
+python src/calib_experiment.py --suffix _int8 --tag _int8   # needs the loo_ models converted too
+```
+The int8 model matches the float one within 0.01 on every metric (see notes.md).
+
+## Week 5 C++ calibration
+```
+python src/test_cpp_calib.py       # builds firmware/lib/zt_calib with g++, compares with calibration.py
+python src/export_factory.py       # writes firmware/generated/zt_factory.h (not committed)
+```
+`firmware/lib/zt_calib/` is the on-device calibration, burn-in and 9-of-12 vote: fixed
+arrays only, 448 bytes of state. The test needs g++ on the PATH (MinGW-w64 on Windows) and
+the int8 models; add `--all` for every fan.
+
+## Week 5 C++ log-mel
+```
+python src/test_cpp_logmel.py           # builds firmware/lib/zt_logmel with g++, compares with features.py
+python src/export_logmel_tables.py      # only after changing src/audio_config.py
+```
+`firmware/lib/zt_logmel/` turns 16-bit audio into the int8 window the model reads (own
+1024-point FFT, 64 mel filters, dB). The test needs g++, the wav files in `data/` and
+`fan_v1_int8`.
+
 ## Rules
 - Never commit `data/`, `venv/`, or model files (.gitignore covers them).
 - Audio settings live only in `src/audio_config.py`; change them only with a note in notes.md.

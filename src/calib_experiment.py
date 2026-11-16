@@ -22,6 +22,7 @@ Metrics: ROC-AUC, false-alarm rate, detection rate, balanced accuracy = (TPR + 1
 
 Usage:
     python src/calib_experiment.py     # writes results/calibration.csv and two figures
+    python src/calib_experiment.py --suffix _int8 --tag _int8    # same with the int8 models
 """
 
 import argparse
@@ -54,11 +55,11 @@ def metrics(model, test_normal, test_abnormal, voted=False):
     return auc, fpr, tpr, (tpr + 1 - fpr) / 2
 
 
-def run(trials: int, n0: float, seed: int) -> pd.DataFrame:
-    seen = feature_bank("fan_v1")
+def run(trials: int, n0: float, seed: int, suffix: str = "") -> pd.DataFrame:
+    seen = feature_bank("fan_v1" + suffix)
     rows = []
     for h in IDS:
-        loo = feature_bank("loo_" + h)
+        loo = feature_bank("loo_" + h + suffix)
         others = [m for m in IDS if m != h]
         setups = {   # scenario: (feature bank, factory groups as (snr, id), target snr)
             "noise_0dB": (seen, [("6dB", h)], "0dB"),
@@ -132,9 +133,11 @@ def main():
     ap.add_argument("--n0", type=float, default=cal.N0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tag", default="", help="suffix for the output files")
+    ap.add_argument("--suffix", default="", help="model name suffix, e.g. _int8 for the "
+                                                 "TFLite models from convert_tflite.py")
     args = ap.parse_args()
 
-    df = run(args.trials, args.n0, args.seed)
+    df = run(args.trials, args.n0, args.seed, args.suffix)
     cols = ["auc", "fpr", "tpr", "bacc"]
     # mean over the four fans per trial, then mean and std over trials
     per_trial = df.groupby(["scenario", "feature", "method", "seconds", "trial"])[cols].mean()

@@ -404,3 +404,179 @@ test clips):
 - Port to C++: `calibrate()`, `score()`, burn-in (3 running numbers) and the vote (12 flags).
   Constants from the PC: 32 means, 32 variances, 4 table thresholds, k values.
 - Test the vote on real consecutive recordings from the INMP441.
+
+## Week 5a: int8 TFLite model (2026-11-16)
+
+`src/convert_tflite.py` turns a trained embedder into a fully int8 TFLite model (weights,
+activations, input and output all int8). `src/tflite_runner.py` runs it on the PC the way
+the ESP32 will; `evaluate.py --model fan_v1_int8` and `calib_experiment.py --suffix _int8`
+then use the int8 embedding. Converted: `fan_v1` and the four `loo_` models.
+
+**The model**
+- 71.7 kB file (62,832 parameters). Ops: CONV_2D, MAX_POOL_2D, MEAN, FULLY_CONNECTED, MUL,
+  ADD (the last two are the fixed input scaling). All are in TFLite Micro.
+- Largest activation is 64×30×16 = 30,720 bytes, so the tensor arena should fit in well
+  under 100 kB of the ESP32-S3's RAM (estimate, to be measured on the board).
+- Input: `q = clamp(round(dB / 0.27714) + 125, -128, 127)`, which covers −70.1 to +0.6 dB
+  in 0.28 dB steps (fan_v1; each model has its own two numbers in `models/<name>_int8.json`).
+  Output: `emb = (q − 4) · 0.04726`.
+
+**One thing had to be fixed.** The int8 ranges are measured on "representative" training
+windows (100 per noise level and machine, 6 dB and 0 dB only). With those alone, the output
+range fitted 6 dB and 0 dB exactly but 7.5% of the embedding values clipped at −6 dB, and
+ROC-AUC there dropped from 0.701 to 0.686. Fix: shift every representative window by a
+random level within ±6 dB (`--gain-db 6`, now the default), which leaves headroom for a
+louder or quieter room without using any −6 dB data. Clipping at −6 dB is then 0.01%.
+
+**int8 against float** (CNN embedding, diagonal Gaussian, mean over four fans)
+
+| | float | int8 |
+|---|---|---|
+| ROC-AUC 6dB>6dB | 0.993 | 0.994 |
+| ROC-AUC 0dB>0dB | 0.912 | 0.912 |
+| ROC-AUC −6dB>−6dB | 0.701 | 0.702 |
+| cosine similarity of the two embeddings | – | 0.999 at every noise level |
+| embedding error / spread of that dimension | – | 5-6% (fan_v1) |
+
+Week 4 calibration experiment repeated with the int8 models (`results/calibration_int8.csv`),
+30 s calibration + 5 min burn-in + 9-of-12 vote, false alarms / detection:
+
+| scenario | float | int8 |
+|---|---|---|
+| noise_0dB | 0.00% / 74.7% | 0.01% / 75.0% |
+| noise_-6dB | 0.15% / 20.4% | 0.16% / 20.5% |
+| machine | 0.10% / 77.0% | 0.10% / 76.9% |
+| machine+noise | 0.03% / 59.2% | 0.02% / 59.0% |
+
+Over all scenarios, methods and calibration lengths, the largest difference between float
+and int8 is 0.007 in ROC-AUC and 0.009 in false-alarm or detection rate. Quantization costs
+nothing measurable, so "frozen int8 CNN" holds.
+
+**For the firmware**
+- The input range is −70 to about 0 dB (MIMII levels; mean −34.6 dB). The INMP441 has a
+  different sensitivity, so its samples need one fixed gain that puts normal sound in this
+  range. Measure it once on the board; windows louder than 0 dB would clip.
+- Still to do: C++ log-mel front end that matches `features.py`, C++ port of calibration,
+  burn-in and vote, then the board itself.
+
+## Week 5b: calibration, burn-in and vote in C++ (2026-11-16)
+
+`firmware/lib/zt_calib/` (`zt_calib.h`, `zt_calib.cpp`) is the C++ port of the device part
+of `src/calibration.py`: calibration from verified normal windows, burn-in threshold, and
+the 9-of-12 vote. It is plain C++11 with `<math.h>` only, so the same files build with g++
+on the PC and later inside the ESP32 project.
+
+**How the firmware uses it** (one call per 1 s window, input = the 32 floats of the embedding)
+1. `begin()`, then `add_calibration_window()` for 5-30 s while the user confirms the machine
+   is healthy, then `finish_calibration()`: new mean, variances mixed with the factory ones.
+2. `push_window()` from then on. For the first 30 clips (5 min burn-in) it only listens and
+   then sets `thr = mean + k·std` of its own clip scores. After that every 10th call returns
+   a clip score and the alarm decision (9 of the last 12 clips above the threshold).
+3. The result of calibration is a `Model` (32 means, 32 variances, 1 threshold = 260 bytes)
+   that can be saved to flash; `resume()` continues with it after a restart.
+
+**Memory.** No `new`/`malloc`, only fixed arrays. The whole detector state is 448 bytes
+(measured on the PC; a few bytes less on the ESP32, where a pointer is 4 bytes). The
+calibration windows are not stored: the mean and variances are updated one window at a time.
+
+**Differences from the Python code, on purpose**
+- Mean and variance are computed as running values (Welford's method) instead of from a
+  stored array. Same result, but accurate in 32-bit floats and no 30×32 buffer.
+- A calibration length that is not 5, 10, 20 or 30 s takes its threshold / k from a straight
+  line between the two nearest table entries (Python only accepts those four lengths).
+- Before 12 clips have been heard, missing clips count as "not above". From the 12th clip on
+  it is exactly `vote_alarm()`.
+
+**Constants from the PC.** `src/export_factory.py` writes `firmware/generated/zt_factory.h`:
+32 factory means and variances, n0, burn-in length, the three small tables (threshold after
+calibration, k for single-clip alarm, k for the vote), and the int8 scale / zero point of the
+model input and output. It is derived from the model, so it is generated and git-ignored like
+the model files. Default: `fan_v1_int8`, all four fans at 6 dB as factory data. Note: this
+exact factory set (all four fans together) was not one of the week 4 scenarios; those used
+one fan or the three other fans.
+
+**Check against Python** (`src/test_cpp_calib.py`, builds with `g++ -Wall -Wextra -Werror`).
+Same int8 embeddings into both, C++ one window at a time. With `--all`: 4 fans × (0 dB, −6 dB)
+with `fan_v1_int8` and the 4 unseen-fan models, × 5/10/20/30 s × 3 random draws × 4 methods
+(table threshold only, 1 min burn-in, 5 min burn-in, 5 min burn-in + vote) = 576 cases.
+
+| compared | largest difference |
+|---|---|
+| calibrated mean | 1.4e-06 (absolute) |
+| calibrated variance | 1.0e-06 (relative) |
+| threshold after calibration | 0 |
+| threshold after burn-in | 3.6e-07 (relative) |
+| clip score | 9.3e-07 (relative) |
+| alarm decisions | 0 of 424,800 differ |
+
+The differences are 32-bit rounding only. The test also checks that the generated header
+gives bit-identical results to constants passed at run time, that a saved model continues
+with the same decisions, and that no alarm can occur during burn-in. Changing the vote from
+9 to 8 in the C++ on purpose makes the test fail, so it does detect a wrong port.
+
+**Not covered yet**
+- Nothing has run on the ESP32-S3; this is the same source compiled for the PC.
+- The log-mel front end in C++ (audio → 64×30 dB window): done in week 5c below.
+
+## Week 5c: log-mel front end in C++ (2026-11-16)
+
+`firmware/lib/zt_logmel/` (`zt_logmel.h`, `zt_logmel.cpp`, `zt_logmel_tables.h`) is the C++
+port of `src/features.py`: 16-bit audio in, the int8 window of the model out. Plain C++11
+with `<math.h>` and `<string.h>` only, so no ESP-specific library is needed and the same
+source builds on the PC.
+
+**What it does per frame** (1024 samples, a new frame every 512)
+1. sample / 32768, times the periodic Hann window;
+2. its own 1024-point radix-2 FFT (in place, 32-bit floats), power of bins 0-512;
+3. 64 mel filters, stored without their zeros (997 weights instead of 64×513);
+4. `10·log10(max(power, 1e-10))`, plus an optional level offset;
+5. to int8 with the model's input scale and zero point, written into column `frame` of the
+   window (`window[mel·30 + frame]`).
+
+`logmel_push()` takes samples in any chunk size, as the microphone driver delivers them, and
+reports when a 1 s window (30 frames) is complete. As in Python, the last 128 samples of
+each second are not used (30 frames need 15,872 samples).
+
+**Memory.** State 10,264 bytes of RAM (one frame of samples 2 kB + FFT work space 8 kB); it
+must be a global or static, not on a task stack. Tables 8,340 bytes of flash: one cos/sin
+table for the FFT (the Hann window is computed from the same cos table) and the mel weights.
+The whole 1 s of audio is never stored, and neither is a float copy of the window.
+
+**Tables.** `src/export_logmel_tables.py` writes `zt_logmel_tables.h` from
+`src/audio_config.py` and librosa's mel filters. It depends on the audio settings only, not
+on data or a model, so this header is committed. The test fails if it no longer matches
+`audio_config.py`, and the C++ refuses to compile if the table sizes do not fit.
+
+**Check against Python** (`src/test_cpp_logmel.py --clips 10`): 240 real MIMII clips
+(10 normal + 10 abnormal per fan and noise level), 2,400 windows, 4.6 million mel values,
+audio fed in chunks of 160 to 16,000 samples.
+
+| compared | result |
+|---|---|
+| dB value, largest difference | 0.000023 dB (one int8 step is 0.277 dB) |
+| int8 model input values that differ | 14 of 4,608,000, never by more than 1 |
+| int8 embedding values that differ | 30 of 76,800 (0.04%), never by more than 1 |
+| clip anomaly score, largest difference | 0.27% (mean 0.003%) |
+| clip decisions that differ (factory threshold) | 0 of 240 |
+| level offset (audio ×2, offset −6.02 dB) | 0.000008 dB |
+
+In the default run (48 clips) the largest score difference was 1.2%: one input value that
+rounds the other way can move a few embedding values by one int8 step, and one step is
+about 0.2 standard deviations of an embedding dimension. That is the coarseness of the int8
+output, not an error of the front end, and it is far below the gap between normal and
+abnormal scores. Replacing the Hann window by a Hamming window on purpose makes the test
+fail (2.9 dB difference), so the test does detect a wrong port.
+
+**For the firmware**
+- The INMP441 gives 24-bit samples; keep the top 16 bits. That loses nothing useful (the
+  microphone's own noise is above the 16-bit floor).
+- `offset_db` is the one number to measure on the board: it moves the microphone's level to
+  the level of the training data (input range −70 to 0 dB, MIMII mean −34.6 dB).
+- Speed is not measured yet. Per second: 30 FFTs of 1024 points and 1,920 `log10f` calls,
+  which should take a small part of a second on the ESP32-S3's float unit. To be measured.
+
+**State of the C++ side.** Audio → `zt_logmel` → int8 window → (TFLite Micro model, not
+wired up yet) → int8 embedding → `zt_calib` → alarm. Both ends are checked against Python
+on the PC; the model in the middle is the same `.tflite` file that `tflite_runner.py` runs.
+Still to do: the ESP32-S3 project itself (I2S microphone, TFLite Micro, button and LED for
+calibration, saving the model to flash), then timing and memory on the board.

@@ -29,3 +29,6 @@ Thumbs.db
 # PlatformIO / ESP-IDF builds
 firmware/**/.pio/
 firmware/**/build/
+
+# Generated firmware constants (from the model): never commit
+firmware/generated/
