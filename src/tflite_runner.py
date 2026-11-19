@@ -16,8 +16,10 @@ import tensorflow as tf
 
 
 class Int8Embedder:
-    def __init__(self, path, batch: int = 256):
-        self.path, self.batch = str(path), batch
+    def __init__(self, path, batch: int = 256, reference: bool = False):
+        """reference=True uses TFLite's plain reference kernels instead of the fast default
+        (XNNPACK), which round some results differently (see notes.md, week 6b)."""
+        self.path, self.batch, self.reference = str(path), batch, reference
         self._open(batch)
         i, o = self.itp.get_input_details()[0], self.itp.get_output_details()[0]
         assert i["dtype"] == np.int8 and o["dtype"] == np.int8, "model is not fully int8"
@@ -25,7 +27,9 @@ class Int8Embedder:
         self.out_scale, self.out_zero = o["quantization"]
 
     def _open(self, n: int):
-        self.itp = tf.lite.Interpreter(model_path=self.path, num_threads=os.cpu_count())
+        kw = {"experimental_op_resolver_type": tf.lite.experimental.OpResolverType.BUILTIN_REF} \
+            if self.reference else {"num_threads": os.cpu_count()}
+        self.itp = tf.lite.Interpreter(model_path=self.path, **kw)
         i = self.itp.get_input_details()[0]
         self.itp.resize_tensor_input(i["index"], [n, *i["shape"][1:]])
         self.itp.allocate_tensors()

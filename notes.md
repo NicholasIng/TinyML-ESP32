@@ -580,3 +580,112 @@ wired up yet) → int8 embedding → `zt_calib` → alarm. Both ends are checked
 on the PC; the model in the middle is the same `.tflite` file that `tflite_runner.py` runs.
 Still to do: the ESP32-S3 project itself (I2S microphone, TFLite Micro, button and LED for
 calibration, saving the model to flash), then timing and memory on the board.
+
+## Week 6a: microphone bring-up on the ESP32-S3 (2026-11-19)
+
+First step on the board: check that the INMP441 works and measure its level, before
+anything else runs on the device. Toolchain: PlatformIO 6.2 with the ESP-IDF framework
+(installed in `~/.platformio/penv`, not in the project venv).
+
+**Wiring** (INMP441 → ESP32-S3; the pins sit next to 3V3 and RST on the DevKitC-1 header)
+
+| INMP441 | ESP32-S3 |
+|---|---|
+| VDD | 3V3 |
+| GND | GND |
+| L/R | GND (microphone sends in the left I2S slot) |
+| SCK | GPIO 4 |
+| WS | GPIO 5 |
+| SD | GPIO 6 |
+
+GPIO 4-6 are not strapping pins and not used by flash, PSRAM or USB.
+
+**Firmware** `firmware/mic_test/` (ESP-IDF, plain C): I2S at 16 kHz, 32-bit stereo slots,
+top 16 bits kept. Once per second it prints an `L` line with the level of both slots (for
+wiring checks), and it streams the audio as `A` lines (256 samples, base64, sequence number
+and checksum) on the console. No commands are needed, so either USB port of the board
+works. The console runs at 921600 baud (44 kB/s of text needed).
+
+**PC side** `src/mic_record.py`: `--monitor` shows the level lines; `--seconds N --name X`
+saves `data/recordings/X.wav` (not committed) and reports the level against the training
+data: offset_db = training mean (−34.6 dB) − mean log-mel level of the recording, and how
+much of the model input would fall outside −70.1..0.6 dB. Lost or damaged lines are counted
+and replaced by silence. Tested without the board on simulated lines made from a MIMII clip
+(one lost and one damaged line): the decoded audio matched exactly.
+
+Build notes: PlatformIO platform `espressif32@8.0.0` = ESP-IDF 6.1.0 (pinned in
+`platformio.ini`). By default ESP-IDF compiles all ~146 components; the first build took
+27 minutes and the compiler crashed (internal error) on the unused RGB LCD driver.
+`set(COMPONENTS src __pio_env)` in the project `CMakeLists.txt` builds only what the code
+needs: about 3 minutes from scratch, 18 kB RAM and 189 kB flash for the mic test. In
+ESP-IDF 6 the console speed can only be changed with `CONFIG_ESP_CONSOLE_UART_CUSTOM=y`.
+
+**The board** (read with esptool, 2026-11-20): ESP32-S3 (QFN56) revision v0.2, 240 MHz dual
+core, 8 MB PSRAM inside the chip (AP 3.3 V), 16 MB quad flash, USB-UART chip FTDI FT232R
+(shows up as COM4). Auto-reset works, so flashing needs no button. Windows first showed the
+FT232R with error code 28 (driver not installed); a hardware rescan installed the FTDI
+driver that was already on the PC.
+
+**USB link checked without the microphone** (the mic still needs its pins soldered): 60 s
+streamed with `mic_record.py`, 0 samples lost, no I2S overflow and no drops on the board.
+With nothing on the I2S pins every sample is 0, as expected. (The first try reported 512
+lost samples: the line that is cut off when the port opens was counted as a loss, and a
+damaged line was counted twice. Fixed in `mic_record.py`.)
+
+## Week 6b: the whole chain on the board (2026-11-20)
+
+`firmware/device_test/` runs exactly what the final device runs, on 6 MIMII clips stored in
+flash (id_00 at 6 dB: 2 normal and 2 abnormal; id_02 at −6 dB: 1 normal and 1 abnormal):
+16-bit audio → `zt_logmel` (fed 512 samples at a time, as from the microphone) → int8
+window → TensorFlow Lite Micro (`espressif/esp-tflite-micro` 1.4.3 with ESP-NN 1.5.0) →
+int8 embedding → `zt_calib`. The first clip is the calibration audio (10 s). The board
+prints every model input, every embedding, the clip scores, times and memory;
+`src/test_device.py` computes the same in Python and compares.
+`python src/test_device.py --prepare` writes the generated inputs (model as a C array,
+factory header, test audio) into `firmware/generated/`.
+
+**Board vs Python** (60 windows)
+
+| compared | result |
+|---|---|
+| int8 model input (log-mel on the board) | 1 of 115,200 values differs, by 1 step |
+| int8 embedding vs TFLite on the PC (default, XNNPACK) | 507 of 1,920 values differ (26%), by at most 2 steps |
+| int8 embedding vs TFLite reference kernels on the PC | 1 of 1,920 differs |
+| clip score (factory model and calibrated model) | largest difference 1.1% |
+
+The 1-2 step differences in the embedding are not from the board: TFLite Micro with ESP-NN
+gives bit-identical results to TFLite Micro with its plain reference kernels, and both
+match the PC's reference kernels. The odd one out is the PC's fast default (XNNPACK), which
+rounds some results differently, and every PC experiment so far used it. A 1-step change is
+about 0.2 standard deviations of one embedding dimension, the same order as the int8
+rounding we already accepted in week 5a, so the PC results should hold; to confirm, the
+int8 calibration experiment can be rerun with `Int8Embedder(..., reference=True)` (new
+option in `src/tflite_runner.py`).
+
+**Speed** (240 MHz, `-O2`, per 1 s window of audio)
+
+| step | ESP-NN kernels | plain reference kernels |
+|---|---|---|
+| log-mel (30 FFT frames) | 39.7 ms | 39.6 ms |
+| int8 model | 39.0 ms | 2,251 ms |
+| score (both models) | 0.01 ms | 0.01 ms |
+| worst window, total | 78.7 ms | 2,293 ms |
+
+With ESP-NN the whole chain needs about 8% of one core: real time with a large margin. ESP-NN
+makes the model 58× faster; without it the board could not keep up with the audio
+(`pio run -e esp32s3_ref` builds the reference version for this comparison).
+
+**Memory**: tensor arena 48.7 kB used (41.8 kB with the reference kernels), LogMel 10,264 B,
+Detector 444 B (448 on the PC: 4-byte pointer), model 73,376 B in flash. With a 128 kB
+arena reserved, 240 kB of internal RAM is still free; the 8 MB PSRAM is not needed yet.
+Firmware image 2.27 MB, of which 1.92 MB is the test audio.
+
+**Build notes**: the TFLite Micro schema header is now
+`tensorflow/lite/micro/schema/schema_generated.h`. PlatformIO needs embedded files listed
+both in `src/CMakeLists.txt` (`EMBED_FILES`) and in `platformio.ini`
+(`board_build.embed_files`). A shell whose working directory is inside
+`managed_components/` blocks the component manager on Windows (file lock).
+
+**Still to do on the board**: microphone (needs soldering), offset_db of the real
+microphone, button and LED for calibration, saving the calibrated model to flash, and the
+real-time loop that joins `mic_test` and `device_test`.

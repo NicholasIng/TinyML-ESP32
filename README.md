@@ -72,6 +72,7 @@ Calibration is also better than only moving the alarm threshold with the same au
 |---|---|---|
 | log-mel front end (`firmware/lib/zt_logmel`) | 10 kB RAM, 8 kB flash | largest difference 0.00002 dB on 240 clips |
 | calibration, burn-in, vote (`firmware/lib/zt_calib`) | 448 bytes | 0 of 424,800 alarm decisions differ |
+| whole chain on the ESP32-S3 (`firmware/device_test`) | 49 kB model arena | clip scores within 1.1% of Python; 79 ms per 1 s of audio |
 
 Neither uses dynamic memory or an ESP-specific library.
 
@@ -85,13 +86,15 @@ Neither uses dynamic memory or an ESP-specific library.
 | Calibration, burn-in, vote (Python) | done |
 | int8 TFLite model | done |
 | C++ log-mel and C++ calibration, tested on PC | done |
-| ESP32-S3 firmware (INMP441 microphone, TFLite Micro) | not started |
+| Whole chain on the ESP32-S3 (stored audio, TFLite Micro), checked against Python | done |
+| Microphone on the board (INMP441), real-time loop, button and LED | started (mic not soldered yet) |
 | Test on a real fan | not started |
 | MIMII DUE | later |
 
 ## Limits
 
-- Nothing has run on the ESP32-S3 yet; speed and memory on the board are estimates.
+- The microphone has not been tested on the board yet; the chain has run on the board
+  only on MIMII audio stored in flash.
 - In a very noisy room (−6 dB) only about 20% of faults are detected. This is a limit of
   the network, not of the calibration.
 - The false-alarm numbers are optimistic: the vote rule was chosen on the test clips, and
